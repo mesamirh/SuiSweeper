@@ -68,59 +68,80 @@ class SuiWalletMonitor {
 
   async checkBalanceAndTransfer() {
     try {
-      const coins = await this.client.getCoins({ owner: this.address });
+      // Get all tokens owned by the address
+      const objects = await this.client.getAllCoins({
+        owner: this.address,
+      });
 
-      if (!coins.data.length) {
+      if (!objects.data.length) {
         console.log(
           `💰 No coins available in wallet - ${new Date().toISOString()}`
         );
         return;
       }
 
-      const totalBalance = coins.data.reduce(
+      // First, check if address have enough SUI for gas
+      const suiCoins = objects.data.filter(
+        (coin) => coin.coinType === "0x2::sui::SUI"
+      );
+      const totalSuiBalance = suiCoins.reduce(
         (sum, coin) => sum + BigInt(coin.balance),
         BigInt(0)
       );
 
-      console.log(
-        `💸 Current balance: ${this.formatBalance(
-          totalBalance.toString()
-        )} - ${new Date().toISOString()}`
+      if (totalSuiBalance < BigInt(this.minimumGas)) {
+        console.log(
+          `⚠️ Not enough SUI for gas (have: ${this.formatBalance(
+            totalSuiBalance.toString()
+          )}, need: ${this.formatBalance(this.minimumGas.toString())})`
+        );
+        return;
+      }
+
+      // Only process non-SUI coins
+      const nonSuiCoins = objects.data.filter(
+        (coin) => coin.coinType !== "0x2::sui::SUI"
       );
+      const coinsByType = nonSuiCoins.reduce((acc, coin) => {
+        if (!acc[coin.coinType]) {
+          acc[coin.coinType] = [];
+        }
+        acc[coin.coinType].push(coin);
+        return acc;
+      }, {});
 
-      const minimumGasBigInt = BigInt(this.minimumGas);
-
-      if (totalBalance > minimumGasBigInt) {
-        const amountToTransfer = totalBalance - minimumGasBigInt;
-        console.log(
-          `🚀 Preparing to transfer: ${this.formatBalance(
-            amountToTransfer.toString()
-          )}`
+      // Process each non-SUI coin type
+      for (const [coinType, coins] of Object.entries(coinsByType)) {
+        const totalBalance = coins.reduce(
+          (sum, coin) => sum + BigInt(coin.balance),
+          BigInt(0)
         );
 
-        const txb = new TransactionBlock();
-        const [coin] = txb.splitCoins(txb.gas, [
-          txb.pure(amountToTransfer.toString()),
-        ]);
-        txb.transferObjects([coin], txb.pure(this.destinationAddress));
-        txb.setGasBudget(this.minimumGas);
-
-        const result = await this.client.signAndExecuteTransactionBlock({
-          transactionBlock: txb,
-          signer: this.keypair,
-          options: { showEffects: true },
-        });
-
-        console.log(`🎉 Transfer successful! Digest: ${result.digest}`);
         console.log(
-          `🔗 View on Sui Explorer: https://suiexplorer.com/txblock/${result.digest}`
+          `💸 Current balance for ${coinType}: ${totalBalance.toString()} - ${new Date().toISOString()}`
         );
-      } else {
-        console.log(
-          `⚠️ Balance too low for transfer (min: ${this.formatBalance(
-            this.minimumGas.toString()
-          )})`
-        );
+
+        if (totalBalance > BigInt(0)) {
+          console.log(
+            `🚀 Preparing to transfer ${totalBalance.toString()} of ${coinType}`
+          );
+
+          const txb = new TransactionBlock();
+          const coinObjects = coins.map((coin) => coin.coinObjectId);
+          txb.transferObjects(coinObjects, txb.pure(this.destinationAddress));
+          txb.setGasBudget(this.minimumGas);
+
+          const result = await this.client.signAndExecuteTransactionBlock({
+            transactionBlock: txb,
+            signer: this.keypair,
+            options: { showEffects: true },
+          });
+
+          console.log(`🎉 Transfer successful! Digest: ${result.digest}`);
+          console.log(
+            `🔗 View on Sui Explorer: https://suiexplorer.com/txblock/${result.digest}`
+          );
+        }
       }
     } catch (error) {
       console.error(
