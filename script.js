@@ -126,21 +126,58 @@ class SuiWalletMonitor {
             `🚀 Preparing to transfer ${totalBalance.toString()} of ${coinType}`
           );
 
-          const txb = new TransactionBlock();
-          const coinObjects = coins.map((coin) => coin.coinObjectId);
-          txb.transferObjects(coinObjects, txb.pure(this.destinationAddress));
-          txb.setGasBudget(this.minimumGas);
+          // Add retry logic for transfers
+          let retryCount = 0;
+          const maxRetries = 3;
+          
+          while (retryCount < maxRetries) {
+            try {
+              // Get fresh coin data before each attempt
+              const latestCoins = await this.client.getAllCoins({
+                owner: this.address,
+                coinType: coinType
+              });
+              
+              const availableCoins = latestCoins.data.filter(coin => 
+                coins.some(originalCoin => 
+                  originalCoin.coinObjectId === coin.coinObjectId
+                )
+              );
 
-          const result = await this.client.signAndExecuteTransactionBlock({
-            transactionBlock: txb,
-            signer: this.keypair,
-            options: { showEffects: true },
-          });
+              if (availableCoins.length === 0) {
+                console.log(`⚠️ No available coins found for ${coinType}`);
+                break;
+              }
 
-          console.log(`🎉 Transfer successful! Digest: ${result.digest}`);
-          console.log(
-            `🔗 View on Sui Explorer: https://suiexplorer.com/txblock/${result.digest}`
-          );
+              const txb = new TransactionBlock();
+              const coinObjects = availableCoins.map(coin => coin.coinObjectId);
+              txb.transferObjects(coinObjects, txb.pure(this.destinationAddress));
+              txb.setGasBudget(this.minimumGas);
+
+              const result = await this.client.signAndExecuteTransactionBlock({
+                transactionBlock: txb,
+                signer: this.keypair,
+                options: { showEffects: true },
+              });
+
+              console.log(`🎉 Transfer successful! Digest: ${result.digest}`);
+              console.log(
+                `🔗 View on Sui Explorer: https://suiexplorer.com/txblock/${result.digest}`
+              );
+              break; // Success, exit retry loop
+
+            } catch (transferError) {
+              retryCount++;
+              if (retryCount === maxRetries) {
+                console.error(
+                  `❌ Transfer error after ${maxRetries} attempts: ${transferError.message} - ${new Date().toISOString()}`
+                );
+              } else {
+                console.log(`⚠️ Retry attempt ${retryCount}/${maxRetries}...`);
+                await this.sleep(2000 * retryCount); // Exponential backoff
+              }
+            }
+          }
         }
       }
     } catch (error) {
